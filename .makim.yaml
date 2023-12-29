@@ -301,3 +301,34 @@ groups:
           makim --makim-file $MAKIM_FILE group-relative.target-no-path $VERBOSE_FLAG
           makim --makim-file $MAKIM_FILE group-relative.target-absolute $VERBOSE_FLAG
           makim --makim-file $MAKIM_FILE group-relative.target-relative $VERBOSE_FLAG
+  
+  log:
+    targets:
+      hello-world:
+        help: Logs  Hello World into a log file
+        args:
+          file:
+            help: Log file path
+            type: str
+            default: /tmp/makim-tmp-log.log
+          message:
+            help: Log message
+            type: str
+            required: true
+        shell: bash
+        run: |
+          echo "{{ args.message }}" >> {{ args.file }} 2>&1
+
+cron:
+  log:
+    help: Cron job for logging
+    schedule: "* * * * *"
+    target: log.hello-world
+    args:
+      file: /tmp/makim-cron-install-test.log 
+      message: this message came from installed makim cron job
+
+  clean:
+    help: Clean log files
+    schedule: "* * * * *"
+    target: clean.tmp

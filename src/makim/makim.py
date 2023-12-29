@@ -9,6 +9,7 @@ import io
 import os
 import pprint
 import sys
+import subprocess
 import tempfile
 import warnings
 
@@ -53,7 +54,198 @@ class PrintPlugin:
         print(Fore.YELLOW, message, Fore.RESET, file=sys.stdout)
 
 
-class Makim(PrintPlugin):
+class CronPlugin:
+    """Makim Cron class."""
+
+    def _is_cron(self,args: dict) -> bool:
+        """Check if the target is a cron job."""
+        return 'cron_command' in args
+
+    def _handle_cron(self, args: dict) -> None:
+        self._validate_cron(args)
+        
+        cron_command = args.get('cron_command')
+        method_name = f'_{cron_command}_cron'
+
+        try:
+            method = getattr(self, method_name)
+            return method(args)
+        except AttributeError:
+            return self._print_error(f'Method for cron command {cron_command} is not implemented.')
+
+
+    # getters - get some specific data
+
+    def _get_cron_config(self, args: dict) -> dict:
+        """Get the cron config."""
+        cron_config = self.global_data.get('cron', {})
+        return cron_config
+
+    def _get_job(self, args: dict) -> str:
+        """Get the cron job."""
+        cron_config = self._get_cron_config(args)
+        job_name = args.get('job')
+        return cron_config.get(job_name)
+
+    def _get_job_args(self, args: dict) -> dict:
+        """Get the cron job args."""
+        job = self._get_job(args)
+        job_args = job.get('args', {})
+        return job_args
+    
+    def _get_target_args(self, args: dict) -> dict:
+        """Get cron job target args."""
+        job_target = self._get_job(args).get('target')
+        group_name, target_name = job_target.split('.')
+        target = self.global_data['groups'][group_name]['targets'][target_name]
+        target_args = target.get('args', {})
+        return target_args
+
+
+    # validators - verify if cron command is valid
+
+    def _verify_cron_config_exists(self, args: dict) -> None:
+        cron_config = self.global_data.get('cron', {})
+        if not cron_config:
+            self._print_error(f'[EE] Cron configuration not found.')
+            os._exit(MakimError.MAKIM_NO_CRON_CONFIG_FOUND.value)
+
+
+    def _verify_job_exists(self, args: dict) -> None:
+        job_name = args.get('job', None)
+        cron_config = self.global_data.get('cron', {})
+        
+        if job_name not in cron_config:
+            self._print_error(f'[EE] Cron job "{job_name}" not found in configuration.')
+            os._exit(MakimError.MAKIM_NO_CRON_JOB_FOUND.value)
+
+                
+    def _verify_job_properties(self, args: dict) -> None:
+        job_name = args.get('job', None)
+        cron_config = self.global_data.get('cron', {})
+
+        job = cron_config.get(job_name)
+        # validate target exists
+        target = job.get('target', None)
+        if not target:
+            self._print_error(f'[EE] No target specified for cron job "{job_name}".')
+            os._exit(MakimError.MAKIM_NO_CRON_TARGET_FOUND.value)
+
+        # validate schedule exists
+        schedule = job.get('schedule', None)
+        if not schedule:
+            self._print_error(f'[EE] No schedule specified for cron job "{job_name}".')
+            os._exit(MakimError.MAKIM_NO_CRON_SCHEDULE_FOUND.value)
+
+
+    def _verify_job_target(self, args: dict) -> None:
+        job_target = self._get_job(args).get('target')
+        group_name, target_name = job_target.split('.')
+        
+        group = self.global_data['groups'].get(group_name, {})
+        if not group:
+            self._print_error(f'[EE] Group "{group_name}" not found in configuration.')
+            os._exit(MakimError.MAKIM_GROUP_NOT_FOUND.value)
+        
+        target = group['targets'].get(target_name, {})
+        if not target:
+            self._print_error(f'[EE] Target "{target_name}" not found in configuration.')
+            os._exit(MakimError.MAKIM_TARGET_NOT_FOUND.value)
+
+
+    def _verify_job_args(self, args: dict) -> None:
+        job_args = self._get_job_args(args)
+        target_args = self._get_target_args(args)
+
+        for arg_name, arg_info in target_args.items():
+            is_required = arg_info.get('required', None)
+            if is_required and arg_name not in job_args:
+                self._print_error(f'[EE] Required argument "{arg_name}" not found in cron job.')
+                os._exit(MakimError.MAKIM_ARGUMENT_REQUIRED.value)
+
+    def _validate_cron(self, args: dict) -> None:
+        self._verify_cron_config_exists(args)
+        self._verify_job_exists(args)
+        self._verify_job_properties(args)
+        self._verify_job_target(args)
+        self._verify_job_args(args)
+
+
+    # commands - execute makim cron commands
+
+    def _run_cron(self, args: dict) -> None:
+        job = self._get_job(args)
+        job_target = job.get('target')
+        job_args = self._get_job_args(args)
+        target_args = self._get_target_args(args)
+
+        cron_args = {'target': job_target, 'makim_file': self.makim_file}
+
+        # get default arguments from target
+        for arg_name, arg_info in target_args.items():
+            cron_args[f'--{arg_name}'] = arg_info.get('default')
+
+        # override with cron job arguments
+        for arg_name, arg_value in job_args.items():
+            if arg_name in target_args:
+                cron_args[f'--{arg_name}'] = arg_value
+
+        # Run the makim command
+        self.run(cron_args)
+
+    def _install_cron(self, args: dict) -> None:
+        # read current cron config
+        cron_config = self._get_cron_config(args)
+        job = args['job']
+        venv_path = sys.executable
+        cmd_args = " ".join([f'--{arg} "{val}"' if ' ' in val else f'--{arg} {val}' for arg, val in self._get_job_args(args).items()])
+
+        job_comment = f'# makim cron job: {job}\n'
+
+        job_data = cron_config.get(job)
+        job_data = {
+            'job_name' : job,
+            'schedule' : job_data.get('schedule'),
+            'target': job_data.get('target'),
+            'backend': job_data.get('backend', 'crontab'),
+            'target_args': cmd_args,
+            'python_path': venv_path,
+        }
+
+
+        job_command = f'{job_data["schedule"]} {job_data["python_path"]} -m makim cron run {job_data["job_name"]}'
+
+        job_entry = job_comment + job_command + '\n'
+        # check if cron is installed
+        pprint.pprint(args)
+        pprint.pprint(job_entry)
+        pprint.pprint(cmd_args)
+
+        return
+
+        current_crontab = subprocess.check_output(['crontab', '-l']).decode()
+        updated_crontab = current_crontab + job_entry
+
+        # create tmp file
+        with open('mycron', 'w') as file:
+            file.write(updated_crontab)
+        
+        # if not, install it,
+        subprocess.run(['crontab', 'mycron'])
+
+        # remove temp file
+        subprocess.run(['rm', 'mycron'])
+
+        print('Cronjob installed successfully.')
+
+
+
+        # if installed, just print info saying it's already installed
+
+        # done
+        return    
+
+class Makim(PrintPlugin, CronPlugin):
     """Makim main class."""
 
     makim_file: str = '.makim.yaml'
@@ -139,6 +331,7 @@ class Makim(PrintPlugin):
 
         self.target_name = target_name
         self._change_group_data(group_name)
+
 
         for target_name, target_data in self.group_data['targets'].items():
             if target_name == self.target_name:
@@ -490,6 +683,10 @@ class Makim(PrintPlugin):
 
         # setup
         self._verify_args()
+
+        if self._is_cron(args):
+            return self._handle_cron(args)
+
         self._change_target(args['target'])
         self._load_target_args()
 

@@ -8,6 +8,10 @@ from pathlib import Path
 from makim import Makim, __version__
 
 
+SUBCOMMANDS = (
+    'cron',
+)
+
 class CustomHelpFormatter(argparse.RawTextHelpFormatter):
     """Formatter for generating usage messages and argument help strings.
 
@@ -36,7 +40,7 @@ class CustomHelpFormatter(argparse.RawTextHelpFormatter):
 makim = Makim()
 
 
-def _get_args():
+def _get_args(subcommand=None):
     """
     Define the arguments for the CLI.
 
@@ -97,8 +101,10 @@ def _get_args():
         makim_file = makim_file_default
 
     makim.load(makim_file)
+    config_data = makim.global_data
     target_help = []
-    groups = makim.global_data.get('groups', [])
+
+    groups = config_data.get('groups', [])
     for group in groups:
         target_help.append('\n' + group + ':')
         target_help.append('-' * (len(group) + 1))
@@ -115,6 +121,21 @@ def _get_args():
                         f'      --{arg_name}: ({arg_data["type"]}) '
                         f'{arg_data["help"]}'
                     )
+    
+    # Process cron configuration
+    cron_jobs = config_data.get('cron', {})
+    if cron_jobs:
+        target_help.append('\nMakim cron jobs:')
+        for job_name, job_data in cron_jobs.items():
+            target_help.append('\n' + job_name + ':')
+            target_help.append('-' * (len(job_name) + 1))
+            help_text = job_data.get('help', 'N/A')
+            target_help.append(f'  help: {help_text}')
+            schedule = job_data.get('schedule', 'N/A')
+            target_help.append(f'  schedule: {schedule}')
+            target = job_data.get('target', 'N/A')
+            target_help.append(f'  target: {target}')
+        target_help.append('\n')
 
     parser.add_argument(
         'target',
@@ -127,6 +148,35 @@ def _get_args():
     )
 
     return parser
+
+
+def _get_args_with_subcommands():
+    parser = _get_args()
+    
+    # add subparsers for subcommands
+    # TODO: refactor, this function should be removed and
+    # conditionally injected inside _get_args() based
+    # on the subcommand passed (sys.argsv[1] in SUBCOMMANDS)
+    cron_subparsers = parser.add_subparsers(title='Makim cron commands', dest='cron_command', metavar='', help='\nMakim can run, create and manage makim commands as cron jobs\n\n')
+
+    # return help when no subcommand is specified
+    cron_parser = cron_subparsers.add_parser('cron', help='show help message\n\n')
+    cron_parser.set_defaults(cron_command='help')
+
+    # run
+    run_command = cron_subparsers.add_parser('run', help='runs cron job the same as makim group.target\n\n')
+    run_command.add_argument('job', type=str, help='Name of the cron job to run')
+
+    # list
+    list_command = cron_subparsers.add_parser('list', help='lists all cron jobs\n\n')
+    list_command.add_argument('job', type=str, help='Name of the cron job to run')
+
+    # instal
+    install_command = cron_subparsers.add_parser('install', help='installs cron job\n\n')
+    install_command.add_argument('job', type=str, help='Name of the cron job to be installed')
+
+    return parser
+
 
 
 def show_version():
@@ -181,14 +231,23 @@ def extract_makim_args():
 
 def app():
     """Call the makim program with the arguments defined by the user."""
+    print(sys.argv)
+    print(len(sys.argv))
+    print(sys.argv[1])
+    # TODO: inject subcommand conditionally based on sys.argv[1] in _get_args() and remove _get_args_with_subcommands()
+    if len(sys.argv) > 1 and any(subcommand == sys.argv[1] for subcommand in SUBCOMMANDS):
+        args_parser = _get_args_with_subcommands()
+    else:
+        args_parser = _get_args()
+
     makim_args = extract_makim_args()
-    args_parser = _get_args()
     args = args_parser.parse_args()
 
     if args.version:
         return show_version()
 
     if not args.target or args.help:
+        args_parser = _get_args_with_subcommands()
         return args_parser.print_help()
 
     if args.help:
